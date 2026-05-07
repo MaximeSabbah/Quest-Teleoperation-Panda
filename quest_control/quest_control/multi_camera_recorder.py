@@ -7,9 +7,15 @@ class MultiCameraRecorder:
     def __init__(self, base_dir):
 
         self.devices = [
-            "/dev/v4l/by-path/pci-0000:06:00.1-usb-0:1:1.0-video-index0",
-            "/dev/v4l/by-path/pci-0000:06:00.1-usb-0:2:1.0-video-index0",
-            "/dev/v4l/by-path/pci-0000:0b:00.3-usb-0:4.1:1.0-video-index0"
+            "/dev/video0",
+            "/dev/video2",
+            "/dev/video4",
+            "/dev/video5",
+            "/dev/video6",
+            "/dev/video7",
+            "/dev/video8",
+            "/dev/video9"
+            
         ]
 
         self.caps = []

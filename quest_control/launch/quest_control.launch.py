@@ -2,6 +2,7 @@ from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     OpaqueFunction,
     RegisterEventHandler,
+    SetEnvironmentVariable,
     TimerAction,
     DeclareLaunchArgument,
 )
@@ -55,8 +56,7 @@ def launch_setup(
     if use_collision_detection:
         extra_params = {
             "ocp": {
-                #"definition_yaml_file": "package://agimus_demo_03_mpc_dummy_traj/config/ocp_definition_file.yaml"
-                "definition_yaml_file": "package://quest_control/config/ocp_definition_file_old.yaml"
+                "definition_yaml_file": "package://quest_control/config/ocp_definition_file.yaml"
             }
         }
     else:
@@ -78,7 +78,8 @@ def launch_setup(
         parameters=[
             get_use_sim_time(),
             agimus_controller_yaml,
-            extra_params
+            extra_params,
+            {"use_constant_buffer": True},
         ],
         output="screen",
         remappings=[("robot_description", "robot_description_with_collision")],
@@ -188,9 +189,13 @@ def generate_launch_description():
         description="Select the ocp to use. Either the default one or the one from this package that does collision avoidance.",
         choices=["default_ocp", "custom_with_collision_avoidance"],
     )
+    fastdds_config = PathJoinSubstitution(
+        [FindPackageShare("quest_control"), "config", "fastdds.xml"]
+    )
     return LaunchDescription(
         [
             ocp_choice,
+            SetEnvironmentVariable("FASTRTPS_DEFAULT_PROFILES_FILE", fastdds_config),
         ]
         + generate_default_franka_args()
         + [OpaqueFunction(function=launch_setup)]

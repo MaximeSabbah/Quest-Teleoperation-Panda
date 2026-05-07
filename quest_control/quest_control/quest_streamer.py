@@ -18,7 +18,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallb
 from agimus_msgs.msg import MpcInput
 from std_msgs.msg import String
 from sensor_msgs.msg import JointState
-from linear_feedback_controller_msgs.msg import Sensor
+from linear_feedback_controller_msgs.msg import Sensor, Control
 from rclpy.node import Node
 from ament_index_python.packages import get_package_share_directory
 import os
@@ -59,9 +59,10 @@ from rclpy.duration import Duration
 
 
 import datetime
+import time
 import cv2
 import threading
-from quest_control.multi_camera_recorder import MultiCameraRecorder
+from quest_control.hybrid_recorder import HybridRecorder
 
 
 @dataclass
@@ -106,19 +107,16 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
 
         self.currently_recording = False
         self.prev_button_state = False
-        self.all_observations= {"timesteps": [], "states": []}
-        self.start_of_episode = datetime.datetime.now()
-        self.demo_filename = ""
-        #This is used to know where and how to save the data
-        self.base_dir = os.path.expanduser("~/demos/red_cube_small_without_numbers_with_timesteps")
-        
-        
-        self.recorder = MultiCameraRecorder(self.base_dir)
-        #self.recorder.initialize_cameras()
+        self.latest_torques: np.ndarray | None = None
         self.start_of_episode = None
-
-        os.makedirs(self.base_dir, exist_ok=True)
         self.timestamp = None
+
+        self.hybrid_recorder = HybridRecorder(
+            base_dir=os.path.expanduser(
+                "~/ros2_ws/src/Quest-Teleoperation-Panda/demos"
+            ),
+            task_name="red_cube_hybrid",
+        )
 
         self.ee_pose = None
         self.last_yaw = None
@@ -131,7 +129,13 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
             JointState,
             '/joint_states',
             self.joint_state_callback,
-            10
+            10,
+        )
+        self.control_sub = self.create_subscription(
+            Control,
+            '/agimus_controller_node/control',
+            self._control_callback,
+            QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT),
         )
         self.tf_broadcaster = TransformBroadcaster(self)
         #self.create_subscription(Sensor, "/linear_feedback_controller/sensor", self.sensor_cb, 10)
@@ -177,6 +181,7 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
                 lifetime=Duration(seconds=0.01 * 10.0).to_msg(),
             )
         self.get_logger().info("Quest trajectory publisher started, waiting for Quest data...")
+    
     def publish_controller_tf(self, T, parent_frame="world", child_frame="quest_right_controller"):
         t = TransformStamped()
 
@@ -212,15 +217,21 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
     
     def joint_state_callback(self, msg: JointState):
         self.joint_states = msg
+
+    def _control_callback(self, msg: Control) -> None:
+        """Store the latest Crocoddyl feedforward torques (7 DOF)."""
+        try:
+            self.latest_torques = np.array(msg.feedforward.data, dtype=np.float64).ravel()[:7]
+        except Exception:
+            pass
+    
     def ready_callback(self):
-        self.get_logger().info(
-            f"QuestTrajectoryPublisher ready. q0 = {[round(v, 3) for v in self.q0]}"
-        )
+        print(f"[quest_streamer] ready_callback: robot ready, q0={[round(v,3) for v in self.q0]}", flush=True)
 
         # Start streaming only once everything is ready
         self.timer = self.create_timer(0.01, self.stream_quest_to_robot, callback_group = self.control_group)
         self.gripper_timer = self.create_timer(0.01, self.gripper_control_robot, callback_group = self.control_group)
-        #self.data_collection_timer = self.create_timer(0.05, self.collect_data, callback_group = self.data_group)
+        self.data_collection_timer = self.create_timer(0.05, self.collect_data, callback_group=self.data_group)
         #self.record_timer = self.create_timer(0.05, self.record_step)
 
 
@@ -233,54 +244,102 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
 
 
     def collect_data(self):
-        #self.recorder.initialize_cameras()
-        if self.latest_data != None:
+        now = time.time()
+        if not hasattr(self, '_last_status_print') or now - self._last_status_print > 5.0:
+            if self.latest_data is None:
+                print("[collect_data] Waiting for VR data (UDP port 5000)...", flush=True)
+            else:
+                save_btn = self.latest_data.right_input.buttons['A']
+                disc_btn = self.latest_data.right_input.buttons['B']
+                print(
+                    f"[collect_data] VR OK | recording={self.currently_recording} | A={save_btn} B={disc_btn}",
+                    flush=True,
+                )
+            self._last_status_print = now
 
-            save_button = self.latest_data.right_input.buttons['A']
+        if self.latest_data is None:
+            return
 
-            if save_button and not self.prev_button_state:
+        save_button = self.latest_data.right_input.buttons['A']
+        discard_button = self.latest_data.right_input.buttons['B']
 
-                if not self.currently_recording:
-                    self.get_logger().info("Starting recording")
-                    self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                    self.recorder.start_recording(self.timestamp)
-                    self.currently_recording = True
-                    self.demo_filename = f""
-                    #self.capture_current_state_as_parquet(start_of_episode)
-                    self.start_of_episode = datetime.datetime.now()
+        if save_button and not self.prev_button_state:
+            if not self.currently_recording:
+                print("[collect_data] START recording episode", flush=True)
+                self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                self.start_of_episode = datetime.datetime.now()
+                self.currently_recording = True
 
-                else:
-                    self.get_logger().info("Stopping recording")
-                    self.recorder.stop_recording()
-                    self.currently_recording = False
-                    self.flush_observation_hdf()
+                self.hybrid_recorder.start_episode(
+                    language_instruction="grab the red cube",
+                )
 
-            self.prev_button_state = save_button
+            else:
+                print("[collect_data] STOP recording episode -> saving", flush=True)
+                self.currently_recording = False
+                self.hybrid_recorder.stop_episode(success=True)
 
-            self.recorder.capture_step()
+        if discard_button and self.currently_recording:
+            print("[collect_data] DISCARD episode (B button)", flush=True)
+            self.currently_recording = False
+            self.hybrid_recorder.discard_episode()
+
+        self.prev_button_state = save_button
+
+    def _build_state_dict(self) -> "dict | None":
+        """Construire le dict état/action pour hybrid_recorder.record_state()."""
+        if self.joint_states is None or self.ee_pose is None:
+            return None
+        try:
+            joint_names = ['fer_joint1','fer_joint2','fer_joint3','fer_joint4',
+                           'fer_joint5','fer_joint6','fer_joint7']
+            j_idx = [self.joint_states.name.index(n) for n in joint_names]
+            joint_pos = np.array([self.joint_states.position[i] for i in j_idx])
+            joint_vel = np.array([self.joint_states.velocity[i] for i in j_idx])
+
+            g_idx = [self.joint_states.name.index('fer_finger_joint1'),
+                     self.joint_states.name.index('fer_finger_joint2')]
+            gripper_pos = np.array([self.joint_states.position[i] for i in g_idx])
+            gripper_vel = np.array([self.joint_states.velocity[i] for i in g_idx])
+
+            import pinocchio as pin
+            ee_id = self.robot_models.robot_model.getFrameId(self.ee_frame_name)
+            data = pin.Data(self.robot_models.robot_model)
+            pin.forwardKinematics(self.robot_models.robot_model, data, self.current_q)
+            pin.updateFramePlacements(self.robot_models.robot_model, data)
+            ee_se3 = data.oMf[ee_id]
+            ee_pos = ee_se3.translation.copy()
+            ee_quat = pin.Quaternion(ee_se3.rotation).coeffs()  # xyzw
+
+            # Pose cible courante (premier élément du plan MPC)
+            quest_ref_se3 = pin.SE3(self.quest_ref) if hasattr(self, 'quest_ref') else ee_se3
+            target_pos = quest_ref_se3.translation.copy()
+            target_quat = pin.Quaternion(quest_ref_se3.rotation).coeffs()
+
+            gripper_cmd = 0.0 if self.current_gripper_status else 1.0  # 0=fermé, 1=ouvert
+
+            return {
+                "timestamp_ns": time.clock_gettime_ns(time.CLOCK_MONOTONIC),
+                "joint_pos": joint_pos,
+                "joint_vel": joint_vel,
+                "ee_pos": ee_pos,
+                "ee_quat": ee_quat,
+                "gripper_pos": gripper_pos,
+                "gripper_vel": gripper_vel,
+                "action_ee_pos": target_pos,
+                "action_ee_quat": target_quat,
+                "action_gripper_cmd": gripper_cmd,
+                # Crocoddyl feedforward torques — zeros until first Control msg arrives
+                "action_joint_torques": (
+                    self.latest_torques.copy()
+                    if self.latest_torques is not None
+                    else np.zeros(7)
+                ),
+            }
+        except Exception as e:
+            self.get_logger().warn(f"[_build_state_dict] erreur: {e}")
+            return None
     
-    def record_step(self):
-        if not self.currently_recording:
-            return
-
-        if self.start_of_episode is None:
-            return
-
-        self.capture_current_state_as_parquet(self.start_of_episode)
-
-    def flush_observation_hdf(self):
-        filepath = f"{self.base_dir}/{self.timestamp}/demo.hdf5"
-        os.makedirs(f"{self.base_dir}/{self.timestamp}", exist_ok=True)
-
-        with h5py.File(filepath, "w") as f:
-            for key, value in self.all_observations.items():
-                f.create_dataset(key, data=value)
-        self.get_logger().info(f"Dumped demo states at {filepath}")
-        
-        #flush the dictionary
-        self.all_observations= {"timesteps": [], "states": []}
-        return
-              
     def capture_current_state_as_parquet(self, timestep):
         if (self.ee_pose is None) or (self.current_q is None):
             #make sure we have a self ee pose
@@ -351,47 +410,22 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
         self.get_logger().info(f"joint_pos_cos: {joint_pos_cos}")
         self.get_logger().info(f"joint_pos_sin: {joint_pos_sin}")
         '''
-        all_obs = np.concatenate((base_position_absolute,
-                                base_rotation_absolute,
-                                ee_position_absolute,
-                                ee_posisiton_relative,
-                                ee_rotation_absolute,
-                                ee_rotation_relative,
-                                gripper_qpos,
-                                gripper_qvel,
-                                joint_positions,
-                                joint_pos_cos,
-                                joint_pos_sin,
-                                joint_velocities), axis = None)
-        
-        self.all_observations["states"].append(all_obs)
-        self.all_observations["timesteps"].append(current_timestep)
 
 
     def gripper_control_robot(self):
-        if self.latest_data != None: #try:
-            #data, addr = self.sock.recvfrom(4096)
-            #frame = self.decode_packet(data)
-            #self.get_logger().info(f"Grip Button? {self.latest_data.right_input.buttons['GripButton']}")
-
-            if self.latest_data.right_input.buttons['GripButton'] != self.current_gripper_status :
-                self.current_gripper_status  = self.latest_data.right_input.buttons['GripButton'] #update current command when change is noticed
-                self.send_new_gripper_goal()
-        #except BlockingIOError:
-        else:
+        if self.latest_data is None:
             return
-    def send_new_gripper_goal(self):
-        if self.current_gripper_status == True:
-            #self.get_logger().info("Senfing close command")
-            
-            #Use this in real life
-            self.franka_gripper_client.grasp()
-    
-            #Use this in sim
-            #self.franka_gripper_client.send_goal(position=0.0001, max_effort=40.0)
+        desired = self.latest_data.right_input.buttons['GripButton']
+        if desired != self.current_gripper_status:
+            sent = self.send_new_gripper_goal(desired)
+            if sent:
+                self.current_gripper_status = desired
+
+    def send_new_gripper_goal(self, close: bool) -> bool:
+        if close:
+            return self.franka_gripper_client.grasp()
         else:
-            #self.get_logger().info("Senfing open command")
-            self.franka_gripper_client.send_goal(position=0.039, max_effort=10.0)
+            return self.franka_gripper_client.send_goal(position=0.039, max_effort=10.0)
     def decode_packet(self, data: bytes) -> VRFrame:
         floats = struct.unpack('<66f', data)
         f = iter(floats)
@@ -576,8 +610,12 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
         self.buffer.append(self.quest_ref) #ee_des_pos
         self.quest_ref=self.quest_ref.homogeneous
         self.publish_controller_tf(self.quest_ref)
-        #self.get_logger().info("Publishing data")
         self.publish_buffer()
+
+        if self.currently_recording:
+            state = self._build_state_dict()
+            if state is not None:
+                self.hybrid_recorder.record_state(state)
         #self.get_logger().info("Desired pose: "+str(pin.SE3ToXYZQUAT(ee_des_pos)))
         #self.last_pos=copy.deepcopy(frame.right_pose.matrix)
             
@@ -589,25 +627,28 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
 
 
     def publish_buffer(self):
+        q_ref = np.array([0.0, -0.78, 0.0, -2.35, 0.0, 1.57, 0.78])
+        q_ref_zero = np.zeros_like(q_ref)
+
         for i in range(len(self.buffer)):
             el=self.buffer.pop(0)
             #self.get_logger().info(f"Element: {el}")
             traj_point = TrajectoryPoint(
                 id=0,
                 time_ns=self.get_clock().now().nanoseconds, #+ int(0.2e9),
-                robot_configuration=self.current_q,
-                robot_velocity=np.zeros_like(self.current_q),
-                robot_acceleration=np.zeros_like(self.current_q),
-                robot_effort=np.zeros_like(self.current_q),
+                robot_configuration=q_ref,
+                robot_velocity=q_ref_zero,
+                robot_acceleration=q_ref_zero,
+                robot_effort=q_ref_zero,
                 end_effector_poses={self.ee_frame_name: pin.SE3ToXYZQUAT(el)},
             )
 
             traj_weights = TrajectoryPointWeights(
-                w_robot_configuration=np.full_like(self.current_q, 1.0), #dtype=float), #self.w_q,
-                w_robot_velocity=np.full_like(self.current_q, 0.1), #self.w_qdot,
-                w_robot_acceleration= np.full_like(self.current_q, 0.000001), #self.w_qddot,
-                w_robot_effort=np.full_like(self.current_q, 0.0008), #self.w_robot_effort,
-                w_end_effector_poses={self.ee_frame_name: [30.0, 30.0, 30.0, 30.0, 30.0, 30.0] },#self.w_pose
+                w_robot_configuration=np.array([15.0, 0.1, 0.06, 0.06, 0.06, 0.06, 0.06]), #dtype=float), #self.w_q,
+                w_robot_velocity=np.full_like(q_ref, 0.05), #self.w_qdot,
+                w_robot_acceleration= np.full_like(q_ref, 0.000001), #self.w_qddot,
+                w_robot_effort=np.full_like(q_ref, 0.0008), #self.w_robot_effort,
+                w_end_effector_poses={self.ee_frame_name: [40.0, 40.0, 40.0, 30.0, 30.0, 30.0] },#self.w_pose
                 #w_end_effector_poses={self.ee_frame_name: [3.0, 3.0, 3.0, 1.0, 1.0, 1.0] },
             )
             weighted_traj_point=WeightedTrajectoryPoint(point=traj_point, weights=traj_weights)
@@ -631,6 +672,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.hybrid_recorder.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

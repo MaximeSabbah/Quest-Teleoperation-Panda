@@ -1,5 +1,0 @@
-gepetto@miyanoura:~/ros2_ws$ 
-ros2 launch quest_control quest_control.launch.py  use_rviz:=true robot_ip:=172.17.1.3 aux_computer_ip:=panda2 aux_computer_user:=mkulcsar 
-
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-export OPENCV_VIDEOIO_PRIORITY_GSTREAMER=0
