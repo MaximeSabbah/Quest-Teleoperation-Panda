@@ -210,3 +210,6 @@ __marimo__/
 # Claude 
 .claude 
 claudeLancement.txt
+
+# Teleop data 
+demos

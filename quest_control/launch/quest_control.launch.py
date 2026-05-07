@@ -79,7 +79,7 @@ def launch_setup(
             get_use_sim_time(),
             agimus_controller_yaml,
             extra_params,
-            {"use_constant_buffer": True},
+            {"trajectory_buffer": "constant"},
         ],
         output="screen",
         remappings=[("robot_description", "robot_description_with_collision")],
@@ -89,7 +89,10 @@ def launch_setup(
     simple_trajectory_publisher_node = Node(
         package="quest_control",
         executable="quest_streamer",
-        parameters=[get_use_sim_time()],
+        parameters=[
+            get_use_sim_time(),
+            {"task_name": LaunchConfiguration("task_name")},
+        ],
         arguments=[],
         output="screen",
     )
@@ -189,12 +192,18 @@ def generate_launch_description():
         description="Select the ocp to use. Either the default one or the one from this package that does collision avoidance.",
         choices=["default_ocp", "custom_with_collision_avoidance"],
     )
+    task_name_arg = DeclareLaunchArgument(
+        "task_name",
+        default_value="red_cube_hybrid",
+        description="Dataset folder name and task label. Use underscores: grab_the_red_cube",
+    )
     fastdds_config = PathJoinSubstitution(
         [FindPackageShare("quest_control"), "config", "fastdds.xml"]
     )
     return LaunchDescription(
         [
             ocp_choice,
+            task_name_arg,
             SetEnvironmentVariable("FASTRTPS_DEFAULT_PROFILES_FILE", fastdds_config),
         ]
         + generate_default_franka_args()

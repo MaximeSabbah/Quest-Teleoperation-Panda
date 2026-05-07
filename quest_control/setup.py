@@ -15,7 +15,6 @@ setup(
         ('share/' + package_name + '/config', ['config/fastdds.xml']),
         ('share/' + package_name + '/config', ['config/agimus_control_params.yaml']),
         ('share/' + package_name + '/config', ['config/ocp_definition_file.yaml']),
-        ('share/' + package_name + '/config', ['config/ocp_definition_file_old.yaml']),
         ('share/' + package_name + '/urdf', ['urdf/cube.sdf']),
         ('share/' + package_name + '/urdf', ['urdf/obstacles.xacro']),
         ('share/' + package_name + '/urdf', ['urdf/environment.urdf.xacro']),

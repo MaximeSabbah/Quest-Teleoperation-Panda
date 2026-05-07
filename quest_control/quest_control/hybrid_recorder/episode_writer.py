@@ -537,17 +537,22 @@ def _update_meta(
 # ------------------------------------------------------------------ #
 
 def _count_existing_episodes(base_dir: str) -> int:
-    info_path = os.path.join(base_dir, "meta", "info.json")
-    if os.path.exists(info_path):
-        try:
-            with open(info_path) as f:
-                return json.load(f)["total_episodes"]
-        except Exception:
-            pass
+    """Return the next free episode index = max existing index + 1.
+
+    Counts actual parquet files on disk so that manually deleted episodes
+    don't leave a ghost count in info.json that would cause index collisions.
+    """
     data_dir = os.path.join(base_dir, "data", "chunk-000")
     if not os.path.exists(data_dir):
         return 0
-    return sum(1 for fn in os.listdir(data_dir) if fn.endswith(".parquet"))
+    indices = []
+    for fn in os.listdir(data_dir):
+        if fn.endswith(".parquet"):
+            try:
+                indices.append(int(fn[len("episode_"):-len(".parquet")]))
+            except ValueError:
+                pass
+    return max(indices) + 1 if indices else 0
 
 
 def _count_existing_frames(base_dir: str) -> int:

@@ -132,3 +132,5 @@ with h5py.File("~/demos/red_cube_hybrid/episode_000000/data.hdf5") as f:
 # Métadonnées
 with open("~/demos/red_cube_hybrid/episode_000000/metadata.json") as f:
     print(json.load(f))  # n_state_steps, frame_counts, success...
+
+ros2 launch quest_control quest_control.launch.py use_rviz:=true robot_ip:=172.17.1.2 task_name:=grab_the_red_cube trajectory_buffer:=standard

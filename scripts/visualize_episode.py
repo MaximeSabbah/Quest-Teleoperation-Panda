@@ -99,7 +99,7 @@ def main():
     camera_views = [rrb.Spatial2DView(name=c, origin=f"/cameras/{c}") for c in cam_names]
     blueprint = rrb.Blueprint(
         rrb.Vertical(
-            rrb.Horizontal(*camera_views, row_shares=[1] * len(camera_views)),
+            rrb.Horizontal(*camera_views, column_shares=[1] * len(camera_views)),
             rrb.Horizontal(
                 rrb.TimeSeriesView(name="EE position",  origin="/robot/ee_pos"),
                 rrb.TimeSeriesView(name="Gripper",      origin="/robot/gripper"),
@@ -117,29 +117,29 @@ def main():
     print("Logging robot state …")
     for i in range(n_rows):
         t = float(timestamps[i])
-        rr.set_time_seconds("time", t)
+        rr.set_time("time", timestamp=t)
 
         state  = obs_state[i]
         action = actions[i]
 
         # EE position (world frame)
-        rr.log("robot/ee_pos/x", rr.Scalar(float(state[14])))
-        rr.log("robot/ee_pos/y", rr.Scalar(float(state[15])))
-        rr.log("robot/ee_pos/z", rr.Scalar(float(state[16])))
+        rr.log("robot/ee_pos/x", rr.Scalars(float(state[14])))
+        rr.log("robot/ee_pos/y", rr.Scalars(float(state[15])))
+        rr.log("robot/ee_pos/z", rr.Scalars(float(state[16])))
 
         # EE target
-        rr.log("robot/ee_target/x", rr.Scalar(float(action[0])))
-        rr.log("robot/ee_target/y", rr.Scalar(float(action[1])))
-        rr.log("robot/ee_target/z", rr.Scalar(float(action[2])))
+        rr.log("robot/ee_target/x", rr.Scalars(float(action[0])))
+        rr.log("robot/ee_target/y", rr.Scalars(float(action[1])))
+        rr.log("robot/ee_target/z", rr.Scalars(float(action[2])))
 
         # Gripper
-        rr.log("robot/gripper/pos_l",   rr.Scalar(float(state[22])))
-        rr.log("robot/gripper/pos_r",   rr.Scalar(float(state[23])))
-        rr.log("robot/gripper/command", rr.Scalar(float(action[7])))
+        rr.log("robot/gripper/pos_l",   rr.Scalars(float(state[22])))
+        rr.log("robot/gripper/pos_r",   rr.Scalars(float(state[23])))
+        rr.log("robot/gripper/command", rr.Scalars(float(action[7])))
 
         # Joint positions
         for j in range(7):
-            rr.log(f"robot/joint_pos/j{j+1}", rr.Scalar(float(state[j])))
+            rr.log(f"robot/joint_pos/j{j+1}", rr.Scalars(float(state[j])))
 
     # --- Log camera frames ---
     for cam in cam_names:
@@ -152,7 +152,7 @@ def main():
         for frame_i, bgr in video_frames(vpath):
             if frame_i >= n_rows:
                 break
-            rr.set_time_seconds("time", float(timestamps[frame_i]))
+            rr.set_time("time", timestamp=float(timestamps[frame_i]))
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             rr.log(f"cameras/{cam}", rr.Image(rgb))
 
@@ -164,7 +164,7 @@ def main():
         for frame_i, d16 in depth_gen:
             if frame_i >= n_rows:
                 break
-            rr.set_time_seconds("time", float(timestamps[frame_i]))
+            rr.set_time("time", timestamp=float(timestamps[frame_i]))
             rr.log("cameras/wrist_depth", rr.DepthImage(d16, meter=1000.0))
 
     print(f"Done. Episode {ep_idx}: {n_rows} rows, {len(cam_names)} cameras.")

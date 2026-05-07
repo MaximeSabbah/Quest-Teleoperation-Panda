@@ -111,11 +111,19 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
         self.start_of_episode = None
         self.timestamp = None
 
+        # Task name drives both the save folder and the language instruction.
+        # Set via launch argument:  task_name:="grab_the_red_cube"
+        # Folder: demos/<task_name>/   Instruction: "grab the red cube"
+        self._task_name = (
+            self.declare_parameter("task_name", "red_cube_hybrid")
+            .get_parameter_value()
+            .string_value
+        )
         self.hybrid_recorder = HybridRecorder(
             base_dir=os.path.expanduser(
                 "~/ros2_ws/src/Quest-Teleoperation-Panda/demos"
             ),
-            task_name="red_cube_hybrid",
+            task_name=self._task_name,
         )
 
         self.ee_pose = None
@@ -271,7 +279,7 @@ class QuestTrajectoryPublisher(TrajectoryPublisherBase):
                 self.currently_recording = True
 
                 self.hybrid_recorder.start_episode(
-                    language_instruction="grab the red cube",
+                    language_instruction=self._task_name.replace("_", " "),
                 )
 
             else:
