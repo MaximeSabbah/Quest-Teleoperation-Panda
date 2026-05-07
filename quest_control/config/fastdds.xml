@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <log>
+        <use_default>False</use_default>
+        <consumer>
+            <class>StdoutConsumer</class>
+            <property>
+                <name>stderr_verbosity</name>
+                <value>Error</value>
+            </property>
+        </consumer>
+    </log>
+</dds>
